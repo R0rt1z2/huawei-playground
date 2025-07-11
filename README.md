@@ -10,6 +10,7 @@ To make these tools readily available and easily accessible for anyone intereste
 * `cm2parser.py`: Script designed to parse CM3 images, including modem, hifi, or mcu images. It will print the header information and will dump all the sections of the image.
 * `fastbootimage.py`: Script designed to parse bootloader (fastboot.img) images. It will print the header information (i.e: load address, end address and first cmd).
 * `oeminfo.py`: Script to unpack and repack oeminfo images. Repacking data with higher size will result in a brick.
+* `partdumper.py`: Script to dump partitions directly from fastboot mode using custom OEM commands. Experimental and might only work on MediaTek based Huawei(s).
 * `update-extractor.py`: Script to extract `UPDATE.APP` files. It will extract and print information about the images contained in the update file.
 
 ## Usage
@@ -54,6 +55,19 @@ python oeminfo.py extract oeminfo.img -s 0x01
 Repack modified entries back into image:
 ```bash
 python oeminfo.py repack oeminfo.img extracted/ -o oeminfo_modified.img
+```
+
+### Partition Dumper
+List all available partitions:
+```bash
+python partdumper.py --list
+```
+
+Dump a specific partition
+```bash
+python partdumper.py recovery recovery.img
+python partdumper.py boot boot.img
+python partdumper.py system system.img
 ```
 
 ### UPDATE.APP Extractor
