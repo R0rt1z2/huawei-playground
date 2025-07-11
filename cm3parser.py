@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 from enum import Enum
 from pathlib import Path
 from typing import Union

@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 from struct import pack, unpack
 from argparse import ArgumentParser
 
