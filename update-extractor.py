@@ -4,7 +4,7 @@ from io import BytesIO
 from pathlib import Path
 from struct import  unpack
 from argparse import ArgumentParser
-from typing import List
+from typing import List, Dict
 
 MAGIC = b'\x55\xAA\x5A\xA5'
 
@@ -67,11 +67,20 @@ class UpdateExtractor:
 
     def extract(self, name: str = None):
         self.output.mkdir(exist_ok=True)
+        name_counts: Dict[str, int] = {}
+        
         for partition in self.partitions:
             if name is not None and partition.type != name:
                 continue
-            with open('%s/%s.img' % (self.output,
-                    partition.type), 'wb') as f:
+                
+            if partition.type in name_counts:
+                name_counts[partition.type] += 1
+                filename = '%s_%d.img' % (partition.type, name_counts[partition.type])
+            else:
+                name_counts[partition.type] = 0
+                filename = '%s.img' % partition.type
+                
+            with open('%s/%s' % (self.output, filename), 'wb') as f:
                 f.write(partition.data)
 
 def main():
