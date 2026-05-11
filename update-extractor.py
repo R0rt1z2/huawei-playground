@@ -1,21 +1,26 @@
 #!/usr/bin/env python3
 
-from io import BytesIO
 from pathlib import Path
-from struct import  unpack
+from struct import unpack
 from argparse import ArgumentParser
-from typing import List, Dict
+from typing import List, Dict, BinaryIO
 
 MAGIC = b'\x55\xAA\x5A\xA5'
 
-CHUNK_SIZE = 0x400  # 1024 bytes
-ALIGNMENT = 4  # Alignment bytes
+CHUNK_SIZE = 0x400
+ALIGNMENT = 4
+
+COPY_CHUNK = 1 << 20
+IO_BUF     = 1 << 20
 
 class Partition:
-    def __init__(self, start: int, hdr_sz: int, unk1: int, hw_id: int, seq: int,
-                 size: int, date: str, time: str, ftype: str, blank1: bytes,
-                 hdr_crc: int, block_size: int, blank2: bytes, checksum: bytes,
-                 data: bytes, end: int):
+    __slots__ = ('start', 'hdr_sz', 'unk1', 'hw_id', 'seq', 'size',
+                 'date', 'time', 'type', 'hdr_crc', 'block_size',
+                 'data_offset', 'end')
+
+    def __init__(self, start, hdr_sz, unk1, hw_id, seq, size,
+                 date, time, ftype, hdr_crc, block_size,
+                 data_offset, end):
         self.start = start
         self.hdr_sz = hdr_sz
         self.unk1 = unk1
@@ -25,79 +30,86 @@ class Partition:
         self.date = date
         self.time = time
         self.type = ftype
-        self.blank1 = blank1
         self.hdr_crc = hdr_crc
         self.block_size = block_size
-        self.blank2 = blank2
-        self.checksum = checksum
-        self.data = data
+        self.data_offset = data_offset
         self.end = end
 
     @classmethod
-    def from_file(cls, file, offset: int = 0):
+    def from_file(cls, file: BinaryIO, offset: int):
         hdr_sz, unk1, hw_id, seq, size = unpack('<LLQLL', file.read(24))
-        date, time, type = file.read(16).decode().strip('\x00'), \
-            file.read(16).decode().strip('\x00'), file.read(16).decode().strip('\x00')
-        blank1, hdr_crc, block_size, blank2, checksum = file.read(16), file.read(2).hex(), \
-            file.read(2).hex(), file.read(2), file.read(hdr_sz - 98)
+        date  = file.read(16).decode(errors='replace').strip('\x00')
+        time  = file.read(16).decode(errors='replace').strip('\x00')
+        ftype = file.read(16).decode(errors='replace').strip('\x00')
+        file.read(16)                       # blank1
+        hdr_crc    = file.read(2).hex()
+        block_size = file.read(2).hex()
+        file.read(2)                        # blank2
+        file.read(hdr_sz - 98)              # checksum table?
 
-        data = file.read(size) if size > 0 else b''
+        data_offset = file.tell()
+        file.seek(size, 1)
+        pad = (ALIGNMENT - file.tell() % ALIGNMENT) % ALIGNMENT
+        if pad:
+            file.seek(pad, 1)
 
-        file.seek((ALIGNMENT - file.tell() % ALIGNMENT) % ALIGNMENT, 1)
-        return cls(offset, hdr_sz, unk1, hw_id, seq, size, date, time, type, blank1,
-                   hdr_crc, block_size, blank2, checksum, data, file.tell())
+        return cls(offset, hdr_sz, unk1, hw_id, seq, size,
+                   date, time, ftype, hdr_crc, block_size,
+                   data_offset, file.tell())
 
 class UpdateExtractor:
     def __init__(self, package: Path, output: Path):
-        self.package = package.open('rb')
+        self.package = package.open('rb', buffering=IO_BUF)
         self.output = output
         self.partitions: List[Partition] = []
-
         self.parse_partitions()
 
     def parse_partitions(self):
+        f = self.package
+        read = f.read
         while True:
-            buffer = self.package.read(4)
-            if not buffer: break
-
-            if buffer == MAGIC:
-                self.partitions.append(Partition.from_file(
-                    self.package, self.package.tell()
-                ))
+            buf = read(4)
+            if not buf:
+                break
+            if buf == MAGIC:
+                self.partitions.append(Partition.from_file(f, f.tell()))
 
     def extract(self, name: str = None):
-        self.output.mkdir(exist_ok=True)
+        self.output.mkdir(exist_ok=True, parents=True)
         name_counts: Dict[str, int] = {}
-        
-        for partition in self.partitions:
-            if name is not None and partition.type != name:
+        f = self.package
+
+        for p in self.partitions:
+            if name is not None and p.type != name:
                 continue
-                
-            if partition.type in name_counts:
-                name_counts[partition.type] += 1
-                filename = '%s_%d.img' % (partition.type, name_counts[partition.type])
+            if p.type in name_counts:
+                name_counts[p.type] += 1
+                filename = '%s_%d.img' % (p.type, name_counts[p.type])
             else:
-                name_counts[partition.type] = 0
-                filename = '%s.img' % partition.type
-                
-            with open('%s/%s' % (self.output, filename), 'wb') as f:
-                f.write(partition.data)
+                name_counts[p.type] = 0
+                filename = '%s.img' % p.type
+
+            f.seek(p.data_offset)
+            remaining = p.size
+            with open(self.output / filename, 'wb', buffering=IO_BUF) as out:
+                while remaining:
+                    chunk = f.read(COPY_CHUNK if remaining > COPY_CHUNK else remaining)
+                    if not chunk:
+                        break
+                    out.write(chunk)
+                    remaining -= len(chunk)
 
 def main():
     parser = ArgumentParser()
     parser.add_argument('package', help='UPDATE.APP package.', type=Path)
-    parser.add_argument('-e', '--extract', help='Extract partitions to files.', action='store_true')
-    parser.add_argument('-o', '--output', help='Output folder.', default='output', type=Path)
-    parser.add_argument('-p', '--partition', help='Partition name to extract.', type=str, default=None)
+    parser.add_argument('-e', '--extract', action='store_true')
+    parser.add_argument('-o', '--output', default='output', type=Path)
+    parser.add_argument('-p', '--partition', type=str, default=None)
     args = parser.parse_args()
 
-    extractor = UpdateExtractor(
-        args.package, args.output)
-
-    for partition in extractor.partitions:
-        print("%s (%d bytes) @ %s - %s" % (partition.type, partition.size,
-                                           hex(partition.start), hex(partition.end)))
-
+    extractor = UpdateExtractor(args.package, args.output)
+    for p in extractor.partitions:
+        print("%s (%d bytes) @ %s - %s" % (p.type, p.size, hex(p.start), hex(p.end)))
     if args.extract:
         extractor.extract(args.partition)
 
